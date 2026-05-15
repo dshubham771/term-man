@@ -1,0 +1,77 @@
+{
+  "name": "terminal-manager",
+  "version": "1.0.0",
+  "description": "A multi-terminal session manager desktop app",
+  "main": "main.js",
+  "scripts": {
+    "build": "esbuild renderer/app.js --bundle --outfile=renderer/bundle.js --platform=browser --format=iife --target=chrome120",
+    "test": "node --test test/*.test.js",
+    "start": "npm run build && electron .",
+    "rebuild": "electron-rebuild",
+    "dist": "npm run build && electron-builder --mac",
+    "dist:dir": "npm run build && electron-builder --mac --dir"
+  },
+  "author": "Shubham Damkondwar",
+  "license": "MIT",
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-search": "^0.16.0",
+    "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/xterm": "^5.5.0",
+    "monaco-editor": "^0.55.1",
+    "node-pty": "^1.0.0"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^25.1.8",
+    "electron-rebuild": "^3.2.9",
+    "esbuild": "^0.28.0"
+  },
+  "build": {
+    "appId": "com.terminal-manager.app",
+    "productName": "Terminal Manager",
+    "asarUnpack": [
+      "shell/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icns",
+      "target": [
+        "dmg"
+      ]
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "git-service.js",
+      "command-history-store.js",
+      "lib/**/*",
+      "shell/tm-zsh-integration.zsh",
+      "shell/zdotdir/.zshenv",
+      "shell/zdotdir/.zprofile",
+      "shell/zdotdir/.zshrc",
+      "shell/zdotdir/.zlogin",
+      "!shell/zdotdir/.zcompdump*",
+      "!shell/zdotdir/*.zwc",
+      "renderer/**/*",
+      "node_modules/**/*"
+    ],
+    "dmg": {
+      "title": "Terminal Manager",
+      "iconSize": 80,
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "publish": null
+  }
+}

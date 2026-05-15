@@ -1,0 +1,8 @@
+node_modules/
+dist/
+out/
+renderer/bundle.js
+.DS_Store
+*.log
+shell/zdotdir/.zcompdump*
+shell/zdotdir/*.zwc
