@@ -5,9 +5,12 @@ const os = require('os');
 const pty = require('node-pty');
 const { getPtySpawnOptions, isZsh } = require('./lib/pty-spawn');
 const { getResourcePath, isUsableShellResource } = require('./lib/resource-path');
+const { PtyOutputFilter } = require('./lib/pty-output-filter');
 
 // Store active PTY processes
 const ptyProcesses = new Map();
+/** @type {Map<string, PtyOutputFilter>} */
+const ptyOutputFilters = new Map();
 
 function getShellIntegrationPaths() {
   const zdotdir = getResourcePath(
@@ -60,7 +63,29 @@ function broadcastToRenderer(channel, payload) {
 }
 
 function handlePtyOutput(id, chunk) {
-  broadcastToRenderer('pty:data', { id, data: chunk });
+  let filter = ptyOutputFilters.get(id);
+  if (!filter) {
+    filter = new PtyOutputFilter();
+    ptyOutputFilters.set(id, filter);
+  }
+
+  const { output, commands, prompt } = filter.process(chunk);
+
+  if (prompt) {
+    broadcastToRenderer('pty:meta', { id, atPrompt: true });
+  }
+
+  if (filter.alternateScreen !== filter._lastAlternateScreen) {
+    filter._lastAlternateScreen = filter.alternateScreen;
+    broadcastToRenderer('pty:meta', {
+      id,
+      alternateScreen: filter.alternateScreen,
+    });
+  }
+
+  if (output) {
+    broadcastToRenderer('pty:data', { id, data: output });
+  }
 }
 
 // Detect user's default shell
@@ -110,6 +135,7 @@ ipcMain.handle('pty:create', (event, { id, cwd }) => {
     });
 
     ptyProcesses.set(id, ptyProcess);
+    ptyOutputFilters.set(id, new PtyOutputFilter());
 
     ptyProcess.onData((data) => {
       handlePtyOutput(id, data);
@@ -117,6 +143,7 @@ ipcMain.handle('pty:create', (event, { id, cwd }) => {
 
     ptyProcess.onExit(({ exitCode, signal }) => {
       ptyProcesses.delete(id);
+      ptyOutputFilters.delete(id);
       broadcastToRenderer('pty:exit', { id, exitCode, signal });
     });
 
@@ -156,6 +183,7 @@ ipcMain.handle('pty:kill', (event, { id }) => {
       ptyProcess.kill();
     } catch (e) {}
     ptyProcesses.delete(id);
+    ptyOutputFilters.delete(id);
     return true;
   }
   return false;
