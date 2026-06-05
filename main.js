@@ -6,11 +6,13 @@ const pty = require('node-pty');
 const { getPtySpawnOptions, isZsh } = require('./lib/pty-spawn');
 const { getResourcePath, isUsableShellResource } = require('./lib/resource-path');
 const { PtyOutputFilter } = require('./lib/pty-output-filter');
+const { CommandHistoryStore } = require('./command-history-store');
 
 // Store active PTY processes
 const ptyProcesses = new Map();
 /** @type {Map<string, PtyOutputFilter>} */
 const ptyOutputFilters = new Map();
+const commandHistoryStore = new CommandHistoryStore();
 
 function getShellIntegrationPaths() {
   const zdotdir = getResourcePath(
@@ -70,6 +72,15 @@ function handlePtyOutput(id, chunk) {
   }
 
   const { output, commands, prompt } = filter.process(chunk);
+
+  if (commands.length > 0) {
+    for (const command of commands) {
+      commandHistoryStore.add(command);
+    }
+    broadcastToRenderer('commandHistory:updated', {
+      entries: commandHistoryStore.getEntries(),
+    });
+  }
 
   if (prompt) {
     broadcastToRenderer('pty:meta', { id, atPrompt: true });
@@ -188,6 +199,8 @@ ipcMain.handle('pty:kill', (event, { id }) => {
   }
   return false;
 });
+
+ipcMain.handle('commandHistory:get', () => commandHistoryStore.getEntries());
 
 app.whenReady().then(() => {
   createWindow();

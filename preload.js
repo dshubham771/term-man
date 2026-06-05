@@ -17,4 +17,12 @@ contextBridge.exposeInMainWorld('terminalAPI', {
     ipcRenderer.on('pty:exit', listener);
     return () => ipcRenderer.removeListener('pty:exit', listener);
   },
+
+  getCommandHistory: () => ipcRenderer.invoke('commandHistory:get'),
+
+  onCommandHistoryUpdated: (callback) => {
+    const listener = (event, payload) => callback(payload);
+    ipcRenderer.on('commandHistory:updated', listener);
+    return () => ipcRenderer.removeListener('commandHistory:updated', listener);
+  },
 });
