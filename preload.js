@@ -25,4 +25,14 @@ contextBridge.exposeInMainWorld('terminalAPI', {
     ipcRenderer.on('commandHistory:updated', listener);
     return () => ipcRenderer.removeListener('commandHistory:updated', listener);
   },
+
+  // State Persistence
+  saveState: (stateData) => ipcRenderer.invoke('state:save', stateData),
+  loadState: () => ipcRenderer.invoke('state:load'),
+  notifySaveComplete: () => ipcRenderer.send('state:saveComplete'),
+
+  // App lifecycle events
+  onBeforeQuit: (callback) => {
+    ipcRenderer.on('app:before-quit', callback);
+  },
 });

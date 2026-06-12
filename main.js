@@ -99,6 +99,20 @@ function handlePtyOutput(id, chunk) {
   }
 }
 
+// ─── State Persistence ────────────────────────────────────
+const STATE_DIR = path.join(os.homedir(), '.terminal-manager');
+const STATE_FILE = path.join(STATE_DIR, 'state.json');
+const SESSIONS_DIR = path.join(STATE_DIR, 'sessions');
+
+function ensureStateDir() {
+  if (!fs.existsSync(STATE_DIR)) {
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(SESSIONS_DIR)) {
+    fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+  }
+}
+
 // Detect user's default shell
 function getDefaultShell() {
   if (process.platform === 'win32') {
@@ -120,6 +134,7 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  setupWindowQuitSave(mainWindow);
 
   mainWindow.on('closed', () => {
     for (const [id, ptyProc] of ptyProcesses) {
@@ -130,6 +145,35 @@ function createWindow() {
     ptyProcesses.clear();
   });
 }
+
+function setupWindowQuitSave(mainWindow) {
+  mainWindow._allowClose = false;
+  mainWindow._quitSaveTimeout = null;
+
+  mainWindow.on('close', (e) => {
+    if (mainWindow._allowClose) return;
+    e.preventDefault();
+    mainWindow.webContents.send('app:before-quit');
+    mainWindow._quitSaveTimeout = setTimeout(() => {
+      mainWindow._allowClose = true;
+      if (!mainWindow.isDestroyed()) {
+        mainWindow.close();
+      }
+    }, 4000);
+  });
+}
+
+ipcMain.on('state:saveComplete', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) return;
+
+  if (win._quitSaveTimeout) {
+    clearTimeout(win._quitSaveTimeout);
+    win._quitSaveTimeout = null;
+  }
+  win._allowClose = true;
+  win.close();
+});
 
 ipcMain.handle('pty:create', (event, { id, cwd }) => {
   const shell = getDefaultShell();
@@ -201,6 +245,31 @@ ipcMain.handle('pty:kill', (event, { id }) => {
 });
 
 ipcMain.handle('commandHistory:get', () => commandHistoryStore.getEntries());
+
+// Save state to disk
+ipcMain.handle('state:save', (event, stateData) => {
+  try {
+    ensureStateDir();
+    fs.writeFileSync(STATE_FILE, JSON.stringify(stateData, null, 2), 'utf-8');
+    return true;
+  } catch (error) {
+    console.error('Failed to save state:', error);
+    return false;
+  }
+});
+
+// Load state from disk
+ipcMain.handle('state:load', () => {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      const data = fs.readFileSync(STATE_FILE, 'utf-8');
+      return JSON.parse(data);
+    }
+  } catch (error) {
+    console.error('Failed to load state:', error);
+  }
+  return null;
+});
 
 app.whenReady().then(() => {
   createWindow();
