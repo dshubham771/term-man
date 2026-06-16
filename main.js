@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -245,6 +245,20 @@ ipcMain.handle('pty:kill', (event, { id }) => {
 });
 
 ipcMain.handle('commandHistory:get', () => commandHistoryStore.getEntries());
+
+// Open native folder picker dialog
+ipcMain.handle('dialog:openFolder', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory'],
+    title: 'Select Folder',
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+
+  return result.filePaths[0];
+});
 
 // Save state to disk
 ipcMain.handle('state:save', (event, stateData) => {

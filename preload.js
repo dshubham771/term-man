@@ -35,4 +35,7 @@ contextBridge.exposeInMainWorld('terminalAPI', {
   onBeforeQuit: (callback) => {
     ipcRenderer.on('app:before-quit', callback);
   },
+
+  // Dialogs
+  openFolderDialog: () => ipcRenderer.invoke('dialog:openFolder'),
 });

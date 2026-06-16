@@ -1,23 +1,267 @@
+import { Sidebar } from './sidebar.js';
 import { TerminalManager } from './terminal-manager.js';
+import { SORT_MODES, ensureCreatedAt, moveItem, sortFolders, sortTerminals } from '../lib/sidebar-order.js';
+
+const state = {
+  folders: [],
+  folderSortMode: SORT_MODES.ADDED_TIME,
+  activeTerminalId: null,
+};
+
+let terminalCounter = 0;
 
 const terminalManager = new TerminalManager();
 
-// Basic state loading skeleton
-async function restoreState() {
-  const savedState = await window.terminalAPI.loadState();
-  if (savedState) {
-    console.log('Restored state:', savedState);
+const sidebar = new Sidebar({
+  onAddFolder: handleAddFolder,
+  onRemoveFolder: handleRemoveFolder,
+  onNewTerminal: handleNewTerminal,
+  onCloseTerminal: handleCloseTerminal,
+  onSelectTerminal: handleSelectTerminal,
+  onRenameTerminal: handleRenameTerminal,
+  onClearTerminal: handleClearTerminal,
+  onToggleFolderCollapsed: handleToggleFolderCollapsed,
+  onSetFolderSortMode: handleSetFolderSortMode,
+  onSetTerminalSortMode: handleSetTerminalSortMode,
+  onReorderFolders: handleReorderFolders,
+  onReorderTerminals: handleReorderTerminals,
+  onSetFolderTagColor: handleSetFolderTagColor,
+  onSetTerminalTagColor: handleSetTerminalTagColor,
+});
+
+const emptyState = document.getElementById('empty-state');
+const terminalHeader = document.getElementById('terminal-header');
+const mainContent = document.getElementById('main-content');
+const viewTabs = document.getElementById('view-tabs');
+const breadcrumbFolder = document.getElementById('breadcrumb-folder');
+const breadcrumbTerminal = document.getElementById('breadcrumb-terminal');
+
+async function handleAddFolder() {
+  const folderPath = await window.terminalAPI.openFolderDialog();
+  if (!folderPath) return;
+
+  if (state.folders.some((f) => f.path === folderPath)) return;
+
+  const folderName = folderPath.split('/').pop() || folderPath;
+  const folder = {
+    id: `folder-${Date.now()}`,
+    path: folderPath,
+    name: folderName,
+    collapsed: false,
+    terminals: [],
+    gitInfo: null,
+    createdAt: Date.now(),
+    tagColor: null,
+    terminalSortMode: SORT_MODES.ADDED_TIME,
+  };
+
+  state.folders.push(folder);
+  applyFolderSort(state.folderSortMode);
+  renderAll();
+  await handleNewTerminal(folder.id);
+}
+
+async function handleRemoveFolder(folderId) {
+  const folder = state.folders.find((f) => f.id === folderId);
+  if (!folder) return;
+  for (const term of folder.terminals) {
+    await terminalManager.destroyTerminal(term.id);
+  }
+  state.folders = state.folders.filter((f) => f.id !== folderId);
+  if (state.activeTerminalId && folder.terminals.some((t) => t.id === state.activeTerminalId)) {
+    state.activeTerminalId = null;
+  }
+  renderAll();
+}
+
+async function handleNewTerminal(folderId) {
+  const folder = state.folders.find((f) => f.id === folderId);
+  if (!folder) return;
+
+  terminalCounter++;
+  const terminalId = `term-${Date.now()}-${terminalCounter}`;
+  const terminalName = `Terminal ${folder.terminals.length + 1}`;
+
+  const term = {
+    id: terminalId,
+    name: terminalName,
+    claudeSession: null,
+    createdAt: Date.now(),
+    tagColor: null,
+  };
+
+  const success = await terminalManager.createTerminal(terminalId, folder.path);
+  if (!success) return;
+
+  folder.terminals.push(term);
+  applyTerminalSort(folder, folder.terminalSortMode);
+  folder.collapsed = false;
+  state.activeTerminalId = terminalId;
+
+  renderAll();
+  terminalManager.showTerminal(terminalId);
+}
+
+async function handleCloseTerminal(folderId, terminalId) {
+  const folder = state.folders.find((f) => f.id === folderId);
+  if (!folder) return;
+
+  await terminalManager.destroyTerminal(terminalId);
+  folder.terminals = folder.terminals.filter((t) => t.id !== terminalId);
+
+  if (state.activeTerminalId === terminalId) {
+    state.activeTerminalId = null;
+    if (folder.terminals.length > 0) {
+      state.activeTerminalId = folder.terminals[folder.terminals.length - 1].id;
+    } else {
+      for (const f of state.folders) {
+        if (f.terminals.length > 0) {
+          state.activeTerminalId = f.terminals[f.terminals.length - 1].id;
+          break;
+        }
+      }
+    }
+  }
+
+  renderAll();
+  if (state.activeTerminalId) {
+    terminalManager.showTerminal(state.activeTerminalId);
   }
 }
 
-async function saveState() {
-  const stateToSave = { timestamp: Date.now() };
-  await window.terminalAPI.saveState(stateToSave);
+async function handleSelectTerminal(folderId, terminalId) {
+  state.activeTerminalId = terminalId;
+  renderAll();
+  terminalManager.showTerminal(terminalId);
 }
 
-window.terminalAPI.onBeforeQuit(async () => {
-  await saveState();
-  window.terminalAPI.notifySaveComplete();
-});
+function handleRenameTerminal(folderId, terminalId, newName) {
+  const folder = state.folders.find((f) => f.id === folderId);
+  if (!folder) return;
+  const term = folder.terminals.find((t) => t.id === terminalId);
+  if (!term) return;
+  term.name = newName;
+  renderAll();
+  if (state.activeTerminalId) {
+    terminalManager.showTerminal(state.activeTerminalId);
+  }
+}
 
-restoreState();
+function handleClearTerminal(folderId, terminalId) {
+  terminalManager.clearTerminal(terminalId);
+}
+
+function handleToggleFolderCollapsed(folderId) {
+  const folder = state.folders.find((item) => item.id === folderId);
+  if (!folder) return;
+  folder.collapsed = !folder.collapsed;
+  renderAll();
+}
+
+function handleSetFolderSortMode(mode) {
+  applyFolderSort(mode);
+  renderAll();
+}
+
+function handleSetTerminalSortMode(mode) {
+  for (const folder of state.folders) {
+    applyTerminalSort(folder, mode);
+  }
+  renderAll();
+}
+
+function handleReorderFolders(sourceFolderId, targetFolderId, placement) {
+  const fromIndex = state.folders.findIndex((item) => item.id === sourceFolderId);
+  const targetIndex = state.folders.findIndex((item) => item.id === targetFolderId);
+  const toIndex = getDropIndex(fromIndex, targetIndex, placement);
+  if (toIndex === fromIndex) return;
+
+  state.folders = moveItem(state.folders, fromIndex, toIndex);
+  state.folderSortMode = SORT_MODES.CUSTOM;
+  renderAll();
+}
+
+function handleReorderTerminals(folderId, sourceTerminalId, targetTerminalId, placement) {
+  const folder = state.folders.find((item) => item.id === folderId);
+  if (!folder) return;
+
+  const fromIndex = folder.terminals.findIndex((item) => item.id === sourceTerminalId);
+  const targetIndex = folder.terminals.findIndex((item) => item.id === targetTerminalId);
+  const toIndex = getDropIndex(fromIndex, targetIndex, placement);
+  if (toIndex === fromIndex) return;
+
+  folder.terminals = moveItem(folder.terminals, fromIndex, toIndex);
+  folder.terminalSortMode = SORT_MODES.CUSTOM;
+  renderAll();
+}
+
+function handleSetFolderTagColor(folderId, tagColor) {
+  const folder = state.folders.find((item) => item.id === folderId);
+  if (!folder) return;
+  folder.tagColor = tagColor ?? null;
+  renderAll();
+}
+
+function handleSetTerminalTagColor(folderId, terminalId, tagColor) {
+  const folder = state.folders.find((item) => item.id === folderId);
+  if (!folder) return;
+  const terminal = folder.terminals.find((item) => item.id === terminalId);
+  if (!terminal) return;
+  terminal.tagColor = tagColor ?? null;
+  renderAll();
+}
+
+function getDropIndex(fromIndex, targetIndex, placement) {
+  if (fromIndex === -1 || targetIndex === -1 || fromIndex === targetIndex) return fromIndex;
+  if (placement === 'below') {
+    return fromIndex < targetIndex ? targetIndex : targetIndex + 1;
+  }
+  return fromIndex < targetIndex ? targetIndex - 1 : targetIndex;
+}
+
+function applyFolderSort(mode) {
+  state.folderSortMode = mode;
+  if (mode !== SORT_MODES.CUSTOM) {
+    state.folders = sortFolders(state.folders, mode);
+  }
+}
+
+function applyTerminalSort(folder, mode) {
+  folder.terminalSortMode = mode;
+  if (mode !== SORT_MODES.CUSTOM) {
+    folder.terminals = sortTerminals(folder.terminals, mode);
+  }
+}
+
+function buildSidebarRenderState() {
+  return {
+    ...state,
+    terminalSortMode: state.folders[0]?.terminalSortMode || SORT_MODES.ADDED_TIME,
+    folders: sortFolders(state.folders, state.folderSortMode).map((folder) => ({
+      ...folder,
+      terminals: sortTerminals(folder.terminals, folder.terminalSortMode),
+    })),
+  };
+}
+
+function renderAll() {
+  sidebar.render(buildSidebarRenderState());
+
+  const hasActiveTerminal = state.activeTerminalId !== null;
+  emptyState.classList.toggle('hidden', hasActiveTerminal);
+  terminalHeader.classList.toggle('hidden', !hasActiveTerminal);
+
+  if (hasActiveTerminal) {
+    const folder = state.folders.find((f) => f.terminals.some((t) => t.id === state.activeTerminalId));
+    if (folder) {
+      const terminal = folder.terminals.find((t) => t.id === state.activeTerminalId);
+      breadcrumbFolder.textContent = folder.name;
+      breadcrumbTerminal.textContent = terminal ? terminal.name : '';
+    }
+  }
+}
+
+document.getElementById('add-folder-btn').addEventListener('click', handleAddFolder);
+document.getElementById('empty-add-folder-btn').addEventListener('click', handleAddFolder);
+
+renderAll();
