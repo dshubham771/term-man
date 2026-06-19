@@ -36,6 +36,10 @@ contextBridge.exposeInMainWorld('terminalAPI', {
     ipcRenderer.on('app:before-quit', callback);
   },
 
+  // Git Operations
+  gitStatus: (cwd) => ipcRenderer.invoke('git:status', { cwd }),
+  gitDiff: (cwd, filePath, fileStatus) => ipcRenderer.invoke('git:diff', { cwd, filePath, fileStatus }),
+
   // Dialogs
   openFolderDialog: () => ipcRenderer.invoke('dialog:openFolder'),
 });

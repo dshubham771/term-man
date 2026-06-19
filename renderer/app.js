@@ -1,16 +1,20 @@
 import { Sidebar } from './sidebar.js';
 import { TerminalManager } from './terminal-manager.js';
+import { DiffViewer } from './diff-viewer.js';
 import { SORT_MODES, ensureCreatedAt, moveItem, sortFolders, sortTerminals } from '../lib/sidebar-order.js';
 
 const state = {
   folders: [],
   folderSortMode: SORT_MODES.ADDED_TIME,
   activeTerminalId: null,
+  drawerMode: null, // 'changes' | null
+  drawerFolderId: null,
 };
 
 let terminalCounter = 0;
 
 const terminalManager = new TerminalManager();
+const diffViewer = new DiffViewer();
 
 const sidebar = new Sidebar({
   onAddFolder: handleAddFolder,
@@ -35,6 +39,93 @@ const mainContent = document.getElementById('main-content');
 const viewTabs = document.getElementById('view-tabs');
 const breadcrumbFolder = document.getElementById('breadcrumb-folder');
 const breadcrumbTerminal = document.getElementById('breadcrumb-terminal');
+
+const rightDrawer = document.getElementById('right-drawer');
+const rightDrawerHeader = document.getElementById('right-drawer-header');
+const rightDrawerTitle = document.getElementById('right-drawer-title');
+const rightDrawerFolder = document.getElementById('right-drawer-folder');
+const changesBtn = document.getElementById('changes-btn');
+
+function getFolderForTerminal(terminalId) {
+  return state.folders.find((folder) =>
+    folder.terminals.some((terminal) => terminal.id === terminalId)
+  ) || null;
+}
+
+function getActiveFolder() {
+  return state.activeTerminalId ? getFolderForTerminal(state.activeTerminalId) : null;
+}
+
+async function openChangesDrawer(folder) {
+  if (!folder) return;
+  state.drawerMode = 'changes';
+  state.drawerFolderId = folder.id;
+
+  rightDrawer.classList.remove('hidden');
+  rightDrawerHeader.classList.remove('hidden');
+  rightDrawerTitle.textContent = 'Changes';
+  rightDrawerFolder.textContent = folder.name;
+  changesBtn.classList.add('active');
+
+  diffViewer.show();
+
+  await fetchGitStatus(folder.id);
+  const refreshedFolder = state.folders.find((f) => f.id === folder.id);
+  if (refreshedFolder) {
+    diffViewer.renderFileList(refreshedFolder.gitInfo?.files || [], refreshedFolder.id, refreshedFolder.path);
+  }
+  renderAll();
+}
+
+function closeDrawer() {
+  state.drawerMode = null;
+  state.drawerFolderId = null;
+  rightDrawer.classList.add('hidden');
+  diffViewer.hide();
+  changesBtn.classList.remove('active');
+  if (state.activeTerminalId) {
+    terminalManager.showTerminal(state.activeTerminalId);
+  }
+}
+
+async function toggleDrawer(mode) {
+  const folder = getActiveFolder();
+  if (!folder) return;
+
+  if (state.drawerMode === mode && state.drawerFolderId === folder.id) {
+    closeDrawer();
+    renderAll();
+    return;
+  }
+
+  if (mode === 'changes') {
+    await openChangesDrawer(folder);
+  }
+}
+
+diffViewer.onRefresh = async () => {
+  if (state.drawerMode !== 'changes' || !state.drawerFolderId) return;
+  const folder = state.folders.find((f) => f.id === state.drawerFolderId);
+  if (folder) {
+    await openChangesDrawer(folder);
+  }
+};
+
+diffViewer.onFileSelect = async (filePath, fileStatus) => {
+  if (state.drawerMode !== 'changes' || !state.drawerFolderId) return;
+  const folder = state.folders.find((f) => f.id === state.drawerFolderId);
+  if (!folder) return;
+
+  const diffData = await window.terminalAPI.gitDiff(folder.path, filePath, fileStatus);
+  diffViewer.showDiff(diffData);
+};
+
+async function fetchGitStatus(folderId) {
+  const folder = state.folders.find((f) => f.id === folderId);
+  if (!folder) return;
+  const gitInfo = await window.terminalAPI.gitStatus(folder.path);
+  folder.gitInfo = gitInfo;
+}
 
 async function handleAddFolder() {
   const folderPath = await window.terminalAPI.openFolderDialog();
@@ -70,6 +161,9 @@ async function handleRemoveFolder(folderId) {
   state.folders = state.folders.filter((f) => f.id !== folderId);
   if (state.activeTerminalId && folder.terminals.some((t) => t.id === state.activeTerminalId)) {
     state.activeTerminalId = null;
+  }
+  if (state.drawerFolderId === folderId) {
+    closeDrawer();
   }
   renderAll();
 }
@@ -248,8 +342,12 @@ function renderAll() {
   sidebar.render(buildSidebarRenderState());
 
   const hasActiveTerminal = state.activeTerminalId !== null;
+  const isDrawerOpen = hasActiveTerminal && state.drawerMode !== null;
+
   emptyState.classList.toggle('hidden', hasActiveTerminal);
   terminalHeader.classList.toggle('hidden', !hasActiveTerminal);
+  mainContent.classList.toggle('drawer-open', isDrawerOpen);
+  viewTabs.classList.toggle('hidden', !hasActiveTerminal);
 
   if (hasActiveTerminal) {
     const folder = state.folders.find((f) => f.terminals.some((t) => t.id === state.activeTerminalId));
@@ -259,9 +357,17 @@ function renderAll() {
       breadcrumbTerminal.textContent = terminal ? terminal.name : '';
     }
   }
+
+  if (isDrawerOpen && state.drawerMode === 'changes') {
+    diffViewer.show();
+  } else {
+    rightDrawer.classList.add('hidden');
+    diffViewer.hide();
+  }
 }
 
 document.getElementById('add-folder-btn').addEventListener('click', handleAddFolder);
 document.getElementById('empty-add-folder-btn').addEventListener('click', handleAddFolder);
+changesBtn.addEventListener('click', () => toggleDrawer('changes'));
 
 renderAll();

@@ -7,6 +7,7 @@ const { getPtySpawnOptions, isZsh } = require('./lib/pty-spawn');
 const { getResourcePath, isUsableShellResource } = require('./lib/resource-path');
 const { PtyOutputFilter } = require('./lib/pty-output-filter');
 const { CommandHistoryStore } = require('./command-history-store');
+const { getGitStatus, getFileDiff } = require('./git-service');
 
 // Store active PTY processes
 const ptyProcesses = new Map();
@@ -283,6 +284,26 @@ ipcMain.handle('state:load', () => {
     console.error('Failed to load state:', error);
   }
   return null;
+});
+
+// Get git status for a folder
+ipcMain.handle('git:status', async (event, { cwd }) => {
+  try {
+    return await getGitStatus(cwd);
+  } catch (error) {
+    console.error('Failed to get git status:', error);
+    return { branch: null, files: [], isRepo: false };
+  }
+});
+
+// Get diff data for a file
+ipcMain.handle('git:diff', async (event, { cwd, filePath, fileStatus }) => {
+  try {
+    return await getFileDiff(cwd, filePath, fileStatus);
+  } catch (error) {
+    console.error('Failed to get diff:', error);
+    return { original: '', modified: '', language: 'plaintext', filePath };
+  }
 });
 
 app.whenReady().then(() => {
