@@ -1,13 +1,14 @@
 import { Sidebar } from './sidebar.js';
 import { TerminalManager } from './terminal-manager.js';
 import { DiffViewer } from './diff-viewer.js';
+import { ProjectFilesBrowser } from './project-files.js';
 import { SORT_MODES, ensureCreatedAt, moveItem, sortFolders, sortTerminals } from '../lib/sidebar-order.js';
 
 const state = {
   folders: [],
   folderSortMode: SORT_MODES.ADDED_TIME,
   activeTerminalId: null,
-  drawerMode: null, // 'changes' | null
+  drawerMode: null, // 'changes' | 'files' | null
   drawerFolderId: null,
 };
 
@@ -15,6 +16,7 @@ let terminalCounter = 0;
 
 const terminalManager = new TerminalManager();
 const diffViewer = new DiffViewer();
+const filesBrowser = new ProjectFilesBrowser();
 
 const sidebar = new Sidebar({
   onAddFolder: handleAddFolder,
@@ -45,6 +47,7 @@ const rightDrawerHeader = document.getElementById('right-drawer-header');
 const rightDrawerTitle = document.getElementById('right-drawer-title');
 const rightDrawerFolder = document.getElementById('right-drawer-folder');
 const changesBtn = document.getElementById('changes-btn');
+const filesBtn = document.getElementById('files-btn');
 
 function getFolderForTerminal(terminalId) {
   return state.folders.find((folder) =>
@@ -56,6 +59,11 @@ function getActiveFolder() {
   return state.activeTerminalId ? getFolderForTerminal(state.activeTerminalId) : null;
 }
 
+function updateActionButtons() {
+  changesBtn.classList.toggle('active', state.drawerMode === 'changes');
+  filesBtn.classList.toggle('active', state.drawerMode === 'files');
+}
+
 async function openChangesDrawer(folder) {
   if (!folder) return;
   state.drawerMode = 'changes';
@@ -65,8 +73,8 @@ async function openChangesDrawer(folder) {
   rightDrawerHeader.classList.remove('hidden');
   rightDrawerTitle.textContent = 'Changes';
   rightDrawerFolder.textContent = folder.name;
-  changesBtn.classList.add('active');
 
+  filesBrowser.hide();
   diffViewer.show();
 
   await fetchGitStatus(folder.id);
@@ -77,15 +85,31 @@ async function openChangesDrawer(folder) {
   renderAll();
 }
 
+async function openFilesDrawer(folder) {
+  if (!folder) return;
+  state.drawerMode = 'files';
+  state.drawerFolderId = folder.id;
+
+  rightDrawer.classList.remove('hidden');
+  rightDrawerHeader.classList.add('hidden'); // File tree hides this default header
+
+  diffViewer.hide();
+  filesBrowser.show();
+
+  await filesBrowser.loadFolder(folder, { force: true });
+  renderAll();
+}
+
 function closeDrawer() {
   state.drawerMode = null;
   state.drawerFolderId = null;
   rightDrawer.classList.add('hidden');
   diffViewer.hide();
-  changesBtn.classList.remove('active');
+  filesBrowser.hide();
   if (state.activeTerminalId) {
     terminalManager.showTerminal(state.activeTerminalId);
   }
+  updateActionButtons();
 }
 
 async function toggleDrawer(mode) {
@@ -100,6 +124,8 @@ async function toggleDrawer(mode) {
 
   if (mode === 'changes') {
     await openChangesDrawer(folder);
+  } else if (mode === 'files') {
+    await openFilesDrawer(folder);
   }
 }
 
@@ -360,14 +386,22 @@ function renderAll() {
 
   if (isDrawerOpen && state.drawerMode === 'changes') {
     diffViewer.show();
+    filesBrowser.hide();
+  } else if (isDrawerOpen && state.drawerMode === 'files') {
+    filesBrowser.show();
+    diffViewer.hide();
   } else {
     rightDrawer.classList.add('hidden');
     diffViewer.hide();
+    filesBrowser.hide();
   }
+
+  updateActionButtons();
 }
 
 document.getElementById('add-folder-btn').addEventListener('click', handleAddFolder);
 document.getElementById('empty-add-folder-btn').addEventListener('click', handleAddFolder);
 changesBtn.addEventListener('click', () => toggleDrawer('changes'));
+filesBtn.addEventListener('click', () => toggleDrawer('files'));
 
 renderAll();

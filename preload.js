@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld('terminalAPI', {
   // Git Operations
   gitStatus: (cwd) => ipcRenderer.invoke('git:status', { cwd }),
   gitDiff: (cwd, filePath, fileStatus) => ipcRenderer.invoke('git:diff', { cwd, filePath, fileStatus }),
+  listProjectFiles: (cwd) => ipcRenderer.invoke('project:listFiles', { cwd }),
+  readProjectFile: (cwd, filePath) => ipcRenderer.invoke('project:readFile', { cwd, filePath }),
 
   // Dialogs
   openFolderDialog: () => ipcRenderer.invoke('dialog:openFolder'),

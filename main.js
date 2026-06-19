@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { execFile } = require('child_process');
 const pty = require('node-pty');
 const { getPtySpawnOptions, isZsh } = require('./lib/pty-spawn');
 const { getResourcePath, isUsableShellResource } = require('./lib/resource-path');
@@ -100,6 +101,126 @@ function handlePtyOutput(id, chunk) {
   }
 }
 
+const FILE_TREE_IGNORE_DIRS = new Set([
+  '.git',
+  'node_modules',
+  'dist',
+  'build',
+  'coverage',
+  '.next',
+  'out',
+  'target',
+  '.turbo',
+  '.cache',
+]);
+
+const FILE_TREE_IGNORE_FILES = new Set(['.DS_Store']);
+
+function runGitCommand(cwd, args) {
+  return new Promise((resolve, reject) => {
+    execFile('git', args, { cwd, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        if (error.code === 1 && args[0] === 'diff') {
+          resolve(stdout);
+          return;
+        }
+        reject(new Error(stderr || error.message));
+        return;
+      }
+      resolve(stdout);
+    });
+  });
+}
+
+async function isGitRepo(cwd) {
+  try {
+    await runGitCommand(cwd, ['rev-parse', '--is-inside-work-tree']);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function listGitProjectFiles(cwd) {
+  const output = await runGitCommand(cwd, ['ls-files', '--cached', '--others', '--exclude-standard']);
+  return output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+async function listFilesystemFiles(rootDir) {
+  const results = [];
+
+  async function walk(currentDir, relativeDir = '') {
+    let entries;
+    try {
+      entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
+    } catch (error) {
+      console.error(`Failed to read directory "${currentDir}":`, error);
+      return;
+    }
+
+    entries.sort((a, b) => {
+      if (a.isDirectory() !== b.isDirectory()) {
+        return a.isDirectory() ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name);
+    });
+
+    for (const entry of entries) {
+      if (entry.name === '.' || entry.name === '..') continue;
+      if (entry.isSymbolicLink()) continue;
+
+      const fullPath = path.join(currentDir, entry.name);
+      const relativePath = relativeDir ? path.join(relativeDir, entry.name) : entry.name;
+      const normalizedPath = relativePath.split(path.sep).join('/');
+
+      if (entry.isDirectory()) {
+        if (FILE_TREE_IGNORE_DIRS.has(entry.name)) continue;
+        await walk(fullPath, relativePath);
+        continue;
+      }
+
+      if (entry.isFile()) {
+        if (FILE_TREE_IGNORE_FILES.has(entry.name)) continue;
+        results.push(normalizedPath);
+      }
+    }
+  }
+
+  await walk(rootDir);
+  results.sort((a, b) => a.localeCompare(b));
+  return results;
+}
+
+async function listProjectFiles(cwd) {
+  if (await isGitRepo(cwd)) {
+    return {
+      isRepo: true,
+      files: await listGitProjectFiles(cwd),
+    };
+  }
+
+  return {
+    isRepo: false,
+    files: await listFilesystemFiles(cwd),
+  };
+}
+
+function resolveProjectFilePath(cwd, filePath) {
+  const root = path.resolve(cwd);
+  const absolutePath = path.resolve(root, filePath);
+  const relativePath = path.relative(root, absolutePath);
+
+  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    throw new Error('Invalid file path');
+  }
+
+  return absolutePath;
+}
+
 // ─── State Persistence ────────────────────────────────────
 const STATE_DIR = path.join(os.homedir(), '.terminal-manager');
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
@@ -179,7 +300,7 @@ ipcMain.on('state:saveComplete', (event) => {
 ipcMain.handle('pty:create', (event, { id, cwd }) => {
   const shell = getDefaultShell();
   const defaultCwd = cwd || os.homedir();
-  const { shell: spawnShell, args, env } = buildPtySpawnOptions(shell);
+  const { shell: spawnShell, args, env = {} } = buildPtySpawnOptions(shell);
 
   try {
     const ptyProcess = pty.spawn(spawnShell, args, {
@@ -303,6 +424,26 @@ ipcMain.handle('git:diff', async (event, { cwd, filePath, fileStatus }) => {
   } catch (error) {
     console.error('Failed to get diff:', error);
     return { original: '', modified: '', language: 'plaintext', filePath };
+  }
+});
+
+ipcMain.handle('project:listFiles', async (event, { cwd }) => {
+  try {
+    return await listProjectFiles(cwd);
+  } catch (error) {
+    console.error('Failed to list project files:', error);
+    return { isRepo: false, files: [] };
+  }
+});
+
+ipcMain.handle('project:readFile', async (event, { cwd, filePath }) => {
+  try {
+    const absolutePath = resolveProjectFilePath(cwd, filePath);
+    const content = await fs.promises.readFile(absolutePath, 'utf-8');
+    return { success: true, content };
+  } catch (error) {
+    console.error('Failed to read project file:', error);
+    return { success: false, error: error.message, content: '' };
   }
 });
 
