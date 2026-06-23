@@ -2,13 +2,13 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { execFile } = require('child_process');
+const { exec, execFile, execSync } = require('child_process');
 const pty = require('node-pty');
+const { getGitStatus, getFileDiff } = require('./git-service');
+const { CommandHistoryStore } = require('./command-history-store');
+const { PtyOutputFilter } = require('./lib/pty-output-filter');
 const { getPtySpawnOptions, isZsh } = require('./lib/pty-spawn');
 const { getResourcePath, isUsableShellResource } = require('./lib/resource-path');
-const { PtyOutputFilter } = require('./lib/pty-output-filter');
-const { CommandHistoryStore } = require('./command-history-store');
-const { getGitStatus, getFileDiff } = require('./git-service');
 
 // Store active PTY processes
 const ptyProcesses = new Map();
@@ -247,6 +247,9 @@ function createWindow() {
   const mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
+    minWidth: 800,
+    minHeight: 500,
+    titleBarStyle: 'hiddenInset',
     backgroundColor: '#0d1117',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -258,49 +261,26 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   setupWindowQuitSave(mainWindow);
 
+  // Clean up all PTY processes when window is closed
   mainWindow.on('closed', () => {
     for (const [id, ptyProc] of ptyProcesses) {
       try {
         ptyProc.kill();
-      } catch (e) {}
+      } catch (e) {
+        // Process may already be dead
+      }
     }
     ptyProcesses.clear();
   });
 }
 
-function setupWindowQuitSave(mainWindow) {
-  mainWindow._allowClose = false;
-  mainWindow._quitSaveTimeout = null;
+// ─── IPC Handlers ─────────────────────────────────────────
 
-  mainWindow.on('close', (e) => {
-    if (mainWindow._allowClose) return;
-    e.preventDefault();
-    mainWindow.webContents.send('app:before-quit');
-    mainWindow._quitSaveTimeout = setTimeout(() => {
-      mainWindow._allowClose = true;
-      if (!mainWindow.isDestroyed()) {
-        mainWindow.close();
-      }
-    }, 4000);
-  });
-}
-
-ipcMain.on('state:saveComplete', (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win || win.isDestroyed()) return;
-
-  if (win._quitSaveTimeout) {
-    clearTimeout(win._quitSaveTimeout);
-    win._quitSaveTimeout = null;
-  }
-  win._allowClose = true;
-  win.close();
-});
-
+// Create a new PTY process
 ipcMain.handle('pty:create', (event, { id, cwd }) => {
   const shell = getDefaultShell();
   const defaultCwd = cwd || os.homedir();
-  const { shell: spawnShell, args, env = {} } = buildPtySpawnOptions(shell);
+  const { shell: spawnShell, args, env } = buildPtySpawnOptions(shell);
 
   try {
     const ptyProcess = pty.spawn(spawnShell, args, {
@@ -331,6 +311,7 @@ ipcMain.handle('pty:create', (event, { id, cwd }) => {
   }
 });
 
+// Write data to a PTY process
 ipcMain.handle('pty:write', (event, { id, data }) => {
   const ptyProcess = ptyProcesses.get(id);
   if (ptyProcess) {
@@ -340,6 +321,7 @@ ipcMain.handle('pty:write', (event, { id, data }) => {
   return false;
 });
 
+// Resize a PTY process
 ipcMain.handle('pty:resize', (event, { id, cols, rows }) => {
   const ptyProcess = ptyProcesses.get(id);
   if (ptyProcess) {
@@ -347,18 +329,22 @@ ipcMain.handle('pty:resize', (event, { id, cols, rows }) => {
       ptyProcess.resize(cols, rows);
       return true;
     } catch (e) {
+      // Process may have exited
       return false;
     }
   }
   return false;
 });
 
+// Kill a PTY process
 ipcMain.handle('pty:kill', (event, { id }) => {
   const ptyProcess = ptyProcesses.get(id);
   if (ptyProcess) {
     try {
       ptyProcess.kill();
-    } catch (e) {}
+    } catch (e) {
+      // Process may already be dead
+    }
     ptyProcesses.delete(id);
     ptyOutputFilters.delete(id);
     return true;
@@ -381,6 +367,39 @@ ipcMain.handle('dialog:openFolder', async () => {
 
   return result.filePaths[0];
 });
+
+// ─── Window quit / state flush ─────────────────────────────
+
+function setupWindowQuitSave(mainWindow) {
+  mainWindow._allowClose = false;
+  mainWindow._quitSaveTimeout = null;
+
+  mainWindow.on('close', (e) => {
+    if (mainWindow._allowClose) return;
+    e.preventDefault();
+    mainWindow.webContents.send('app:before-quit');
+    mainWindow._quitSaveTimeout = setTimeout(() => {
+      mainWindow._allowClose = true;
+      if (!mainWindow.isDestroyed()) {
+        mainWindow.close();
+      }
+    }, 4000);
+  });
+}
+
+ipcMain.on('state:saveComplete', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) return;
+
+  if (win._quitSaveTimeout) {
+    clearTimeout(win._quitSaveTimeout);
+    win._quitSaveTimeout = null;
+  }
+  win._allowClose = true;
+  win.close();
+});
+
+// ─── State Persistence IPC ────────────────────────────────
 
 // Save state to disk
 ipcMain.handle('state:save', (event, stateData) => {
@@ -406,6 +425,8 @@ ipcMain.handle('state:load', () => {
   }
   return null;
 });
+
+// ─── Git IPC Handlers ─────────────────────────────────────
 
 // Get git status for a folder
 ipcMain.handle('git:status', async (event, { cwd }) => {
@@ -447,8 +468,207 @@ ipcMain.handle('project:readFile', async (event, { cwd, filePath }) => {
   }
 });
 
+// ─── Claude Code Monitoring ────────────────────────────────
+
+const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
+let claudeSettingsWatcher = null;
+
+function readClaudeSettings() {
+  try {
+    if (fs.existsSync(CLAUDE_SETTINGS_PATH)) {
+      return JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_PATH, 'utf-8'));
+    }
+  } catch (e) {
+    console.error('Failed to read claude settings:', e);
+  }
+  return {};
+}
+
+ipcMain.handle('claude:getStatus', () => {
+  const settings = readClaudeSettings();
+  return { model: settings.model || null };
+});
+
+ipcMain.handle('claude:setModel', (event, { model }) => {
+  try {
+    const settings = readClaudeSettings();
+    settings.model = model;
+    const claudeDir = path.dirname(CLAUDE_SETTINGS_PATH);
+    if (!fs.existsSync(claudeDir)) fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2), 'utf-8');
+    return { success: true };
+  } catch (e) {
+    console.error('Failed to set claude model:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('claude:startWatching', () => {
+  if (claudeSettingsWatcher || !fs.existsSync(CLAUDE_SETTINGS_PATH)) return;
+  try {
+    claudeSettingsWatcher = fs.watch(CLAUDE_SETTINGS_PATH, { persistent: false }, (eventType) => {
+      if (eventType !== 'change') return;
+      // Small delay to let the write fully flush before reading
+      setTimeout(() => {
+        const settings = readClaudeSettings();
+        const win = BrowserWindow.getAllWindows()[0];
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('claude:settingsChanged', settings);
+        }
+      }, 120);
+    });
+  } catch (e) {
+    console.error('Failed to watch claude settings:', e);
+  }
+});
+
+ipcMain.handle('claude:isRunning', () => {
+  return new Promise((resolve) => {
+    // Try exact process name first, then fall back to path match
+    exec('pgrep -x claude 2>/dev/null || pgrep -f "/claude" 2>/dev/null | head -1', (err, stdout) => {
+      resolve(!err && stdout.trim().length > 0);
+    });
+  });
+});
+
+ipcMain.handle('claude:sendToTerminal', (event, { id, command }) => {
+  const ptyProcess = ptyProcesses.get(id);
+  if (ptyProcess) {
+    ptyProcess.write(command + '\r');
+    return true;
+  }
+  return false;
+});
+
+// ─── Claude Code session detection ─────────────────────────
+
+const CLAUDE_SESSIONS_DIR = path.join(os.homedir(), '.claude', 'sessions');
+let claudeSessionsWatcher = null;
+let claudeSessionsNotifyTimer = null;
+
+function listProcesses() {
+  const output = execSync('ps -eo pid=,ppid=,comm=', {
+    encoding: 'utf-8',
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  const processes = [];
+  for (const line of output.trim().split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const match = trimmed.match(/^(\d+)\s+(\d+)\s+(.+)$/);
+    if (!match) continue;
+    processes.push({
+      pid: parseInt(match[1], 10),
+      ppid: parseInt(match[2], 10),
+      comm: match[3].trim(),
+    });
+  }
+  return processes;
+}
+
+function readClaudeSessionFile(pid) {
+  const filePath = path.join(CLAUDE_SESSIONS_DIR, `${pid}.json`);
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    if (!data.sessionId) return null;
+    return {
+      sessionId: data.sessionId,
+      name: data.name || null,
+      cwd: data.cwd || null,
+      updatedAt: data.updatedAt || null,
+    };
+  } catch (e) {
+    console.error(`Failed to read Claude session file for pid ${pid}:`, e);
+    return null;
+  }
+}
+
+function resolveClaudeSessionForShellPid(shellPid) {
+  if (!shellPid || !Number.isFinite(shellPid)) return null;
+
+  const processes = listProcesses();
+  const childrenByPpid = new Map();
+  for (const proc of processes) {
+    if (!childrenByPpid.has(proc.ppid)) {
+      childrenByPpid.set(proc.ppid, []);
+    }
+    childrenByPpid.get(proc.ppid).push(proc);
+  }
+
+  const queue = [shellPid];
+  const visited = new Set();
+  let best = null;
+
+  while (queue.length > 0) {
+    const pid = queue.shift();
+    if (visited.has(pid)) continue;
+    visited.add(pid);
+
+    const children = childrenByPpid.get(pid) || [];
+    for (const child of children) {
+      const commBase = path.basename(child.comm);
+      if (commBase === 'claude') {
+        const session = readClaudeSessionFile(child.pid);
+        if (session) {
+          const updatedAt = session.updatedAt || 0;
+          if (!best || updatedAt >= (best.updatedAt || 0)) {
+            best = session;
+          }
+        }
+      }
+      queue.push(child.pid);
+    }
+  }
+
+  return best;
+}
+
+function notifyClaudeSessionsUpdated() {
+  if (claudeSessionsNotifyTimer) clearTimeout(claudeSessionsNotifyTimer);
+  claudeSessionsNotifyTimer = setTimeout(() => {
+    claudeSessionsNotifyTimer = null;
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('claude:sessionUpdated');
+    }
+  }, 200);
+}
+
+function startClaudeSessionsWatcher() {
+  if (claudeSessionsWatcher) return;
+  if (!fs.existsSync(CLAUDE_SESSIONS_DIR)) {
+    try {
+      fs.mkdirSync(CLAUDE_SESSIONS_DIR, { recursive: true });
+    } catch (e) {
+      console.error('Failed to create Claude sessions directory:', e);
+      return;
+    }
+  }
+
+  try {
+    claudeSessionsWatcher = fs.watch(CLAUDE_SESSIONS_DIR, { persistent: false }, () => {
+      notifyClaudeSessionsUpdated();
+    });
+  } catch (e) {
+    console.error('Failed to watch Claude sessions directory:', e);
+  }
+}
+
+ipcMain.handle('claude:resolveSession', (event, { shellPid }) => {
+  try {
+    return resolveClaudeSessionForShellPid(shellPid);
+  } catch (e) {
+    console.error('Failed to resolve Claude session:', e);
+    return null;
+  }
+});
+
+// ─── App Lifecycle ────────────────────────────────────────
+
 app.whenReady().then(() => {
   createWindow();
+  startClaudeSessionsWatcher();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -458,10 +678,13 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  // Clean up any remaining PTY processes
   for (const [id, ptyProc] of ptyProcesses) {
     try {
       ptyProc.kill();
-    } catch (e) {}
+    } catch (e) {
+      // Ignore
+    }
   }
   ptyProcesses.clear();
 
