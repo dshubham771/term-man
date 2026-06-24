@@ -15,6 +15,8 @@ const ptyProcesses = new Map();
 /** @type {Map<string, PtyOutputFilter>} */
 const ptyOutputFilters = new Map();
 const commandHistoryStore = new CommandHistoryStore();
+let isQuitting = false;
+
 
 function getShellIntegrationPaths() {
   const zdotdir = getResourcePath(
@@ -380,7 +382,9 @@ function setupWindowQuitSave(mainWindow) {
     mainWindow.webContents.send('app:before-quit');
     mainWindow._quitSaveTimeout = setTimeout(() => {
       mainWindow._allowClose = true;
-      if (!mainWindow.isDestroyed()) {
+      if (isQuitting) {
+        app.quit();
+      } else if (!mainWindow.isDestroyed()) {
         mainWindow.close();
       }
     }, 4000);
@@ -396,7 +400,11 @@ ipcMain.on('state:saveComplete', (event) => {
     win._quitSaveTimeout = null;
   }
   win._allowClose = true;
-  win.close();
+  if (isQuitting) {
+    app.quit();
+  } else {
+    win.close();
+  }
 });
 
 // ─── State Persistence IPC ────────────────────────────────
@@ -665,6 +673,10 @@ ipcMain.handle('claude:resolveSession', (event, { shellPid }) => {
 });
 
 // ─── App Lifecycle ────────────────────────────────────────
+
+app.on('before-quit', () => {
+  isQuitting = true;
+});
 
 app.whenReady().then(() => {
   createWindow();
