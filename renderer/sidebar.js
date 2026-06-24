@@ -293,12 +293,12 @@ export class Sidebar {
     headerBar.addEventListener('dragover', (event) => {
       if (!this._dragState || this._dragState.type !== 'folder') return;
       event.preventDefault();
-      this._applyDropIndicator(group, this._getDropPlacement(event, headerBar));
+      this._applyDropIndicator(headerBar, this._getDropPlacement(event, headerBar));
     });
 
     headerBar.addEventListener('dragleave', (event) => {
-      if (!group.contains(event.relatedTarget)) {
-        this._clearDropIndicator(group);
+      if (!headerBar.contains(event.relatedTarget)) {
+        this._clearDropIndicator(headerBar);
       }
     });
 
@@ -310,7 +310,7 @@ export class Sidebar {
       const targetIndex = folders.findIndex((item) => item.id === folder.id);
       const placement = this._getDropPlacement(event, headerBar);
       const toIndex = this._getDropIndex(fromIndex, targetIndex, placement);
-      this._clearDropIndicator(group);
+      this._clearDropIndicator(headerBar);
       if (fromIndex !== -1 && toIndex !== fromIndex) {
         this.callbacks.onReorderFolders(this._dragState.folderId, folder.id, placement);
       }
@@ -318,7 +318,7 @@ export class Sidebar {
 
     folderDragHandle.addEventListener('dragend', () => {
       group.classList.remove('dragging');
-      this._clearDropIndicator(group);
+      this._clearDropIndicator(headerBar);
       this._dragState = null;
     });
 
