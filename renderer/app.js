@@ -984,20 +984,20 @@ window.terminalAPI.onBeforeQuit(async () => {
   window.terminalAPI.notifySaveComplete();
 });
 
-// window.addEventListener('blur', () => {
-//   if (state.folders.length > 0) {
-//     saveState();
-//   }
-// });
+window.addEventListener('blur', () => {
+  if (state.folders.length > 0) {
+    saveState();
+  }
+});
 
 // ─── Git Polling ────────────────────────────────────────────
 
 // Refresh git status every 10 seconds
-// setInterval(() => {
-//   if (state.folders.length > 0) {
-//     refreshAllGitStatus();
-//   }
-// }, 10000);
+setInterval(() => {
+  if (state.folders.length > 0) {
+    refreshAllGitStatus();
+  }
+}, 10000);
 
 // ─── Startup ────────────────────────────────────────────────
 
