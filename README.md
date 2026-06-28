@@ -2,6 +2,8 @@
 
 A powerful open-source multi-terminal session manager desktop application built with Electron, xterm.js, and Monaco Editor. Designed to streamline developer workflows by grouping terminal sessions by folder/workspace, displaying live git status/diffs, and providing a built-in file explorer.
 
+![Terminal Manager UI](build/ui.png)
+
 ---
 
 ## ⚡ Features
