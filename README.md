@@ -1,6 +1,6 @@
 # Terminal Manager
 
-A powerful open-source multi-terminal session manager desktop application built with Electron, xterm.js, and Monaco Editor. Designed to streamline developer workflows by grouping terminal sessions by folder/workspace, displaying live git status/diffs, and providing a built-in file explorer.
+A powerful open-source multi-terminal session manager desktop application built with Electron, xterm.js, and Monaco Editor. Designed to streamline developer workflows by providing a simple, efficient way to organize and run multiple concurrent command-line AI agents (such as Claude Code, Codex, Gemini, etc.) alongside standard shells. It groups terminal sessions by workspace, displays live git status/diffs, and provides a built-in file explorer.
 
 ![Terminal Manager UI](build/ui.png)
 
